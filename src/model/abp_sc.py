@@ -39,25 +39,21 @@ class Generator(nn.Module):
 
 
 class ABPSC():
-    def __init__(self, parser):
+    def __init__(self, latent_size, alpha, learning_rate, langevin_steps, noise_variance, slab_variance, langevin_stepsize, cuda):
         super().__init__()
-        if parser.cuda == True:
+
+        if cuda is True:
             self.device = "cuda:0"
         else:
             self.device = "cpu"
-        self.noise_variance = parser.noise_variance
-        self.slab_variance = parser.slab_variance
-        self.langevin_steps = parser.langevin_steps
-        self.num_epochs = parser.num_epochs
-        self.latent_size = parser.latent_size
-        self.alpha = parser.alpha
-        self.learning_rate = parser.learning_rate
-        self.batch_size = parser.batch_size
-        self.langevin_stepsize = parser.langevin_stepsize
-        self.hidden_size = parser.hidden_size
-        self.kernel_size = parser.kernel_size
-        self.channel_size = parser.channel_size
-        self.image_size = parser.image_size
+        self.noise_variance = noise_variance
+        self.slab_variance = slab_variance
+        self.langevin_steps = langevin_steps
+        self.latent_size = latent_size
+        self.alpha = alpha
+        self.learning_rate = learning_rate
+        self.langevin_stepsize = langevin_stepsize
+
 
     def init_weight(self):
         classname = self.generator.__class__.__name__
@@ -91,15 +87,17 @@ class ABPSC():
             z = z.detach().requires_grad_()
         return z
 
-    def train(self, train_loader):
-        self.generator = Generator(self.latent_size, self.hidden_size, self.kernel_size, self.channel_size, self.image_size).to(self.device)
+    def train(self, train_loader, num_epochs, hidden_size, kernel_size,  channel_size, image_size):
+        self.generator = Generator(self.latent_size, hidden_size, kernel_size, channel_size, image_size).to(self.device)
         self.init_weight()
         optimizer = torch.optim.Adam(self.generator.parameters(), lr=self.learning_rate)
+
+        self.batch_size = train_loader.batch_size
 
         z = self.alpha * torch.randn(len(train_loader.dataset), self.latent_size) + (1 - self.alpha) * torch.mul(torch.randn(len(train_loader.dataset), self.latent_size), self.slab_variance)
         z = z.to(self.device).requires_grad_()
 
-        for epochs in range(self.num_epochs):
+        for epochs in range(num_epochs):
             total_loss = 0
 
             for batch_idx, (data, _) in enumerate(train_loader):
@@ -116,7 +114,7 @@ class ABPSC():
                 optimizer.step()
                 total_loss = total_loss + loss.item()
 
-            if epochs % 5 == 0 or epochs == self.num_epochs - 1:
+            if epochs % 5 == 0 or epochs == num_epochs - 1:
                 print("Interation:", epochs)
                 print("Loss: ", total_loss)
                 print("Average Z Sum:", torch.pow(z, 2).sum() / len(train_loader.dataset))
