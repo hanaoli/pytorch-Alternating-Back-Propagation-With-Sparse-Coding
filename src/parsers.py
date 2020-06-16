@@ -13,7 +13,7 @@ def get_parser(description="ABPSC MNIST"):
     parser.add_argument('-image_size', type=int, default=28, help='Image height and length, default=28')
 
     # Training Arguments
-    parser.add_argument('-cuda', type=bool, default=True, help='Whether use gpu for training, default=true')
+    parser.add_argument('-device', type=str, default='cuda:0', help='Whether use gpu for training, default=cuda:0')
     parser.add_argument('-batch_size', type=int, default=32, help='training batch size, default=32')
     parser.add_argument('-learning_rate', type=float, default=0.001, help='learning rate for generator, default=0.001')
     parser.add_argument('-num_epochs', type=int, default=20, help='number of training epochs, default=20')
