@@ -1,6 +1,7 @@
 from torchvision import datasets, transforms
 import torch
 
+
 def get_dataset(dataset, batch_size):
     if dataset == 'mnist':
         train_dataset = datasets.MNIST(root='./mnist_train', train=True, transform=transforms.ToTensor(), download=True)
