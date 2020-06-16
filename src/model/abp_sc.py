@@ -38,14 +38,34 @@ class Generator(nn.Module):
         return output
 
 
-class ABPSC():
-    def __init__(self, latent_size, alpha, learning_rate, langevin_steps, noise_variance, slab_variance, langevin_stepsize, cuda):
+class Linear_Generator(nn.Module):
+    def __init__(self, latent_size, hidden_size,  channel_size, image_size):
         super().__init__()
 
-        if cuda is True:
-            self.device = "cuda:0"
-        else:
-            self.device = "cpu"
+        self.latent_size = latent_size
+        self.hidden_size = hidden_size
+        self.channel_size = channel_size
+        self.image_size = image_size
+
+        self.latent_to_feature = nn.Sequential( # MNIST Input Z dimension
+            nn.Linear(self.latent_size, self.hidden_size),
+            nn.ReLU(), # Output hidden_size
+
+            nn.Linear(self.hidden_size, self.channel_size * self.image_size * self.image_size),
+            nn.Sigmoid()
+        )
+
+    def forward(self, z):
+        features = self.latent_to_feature(z)
+        output = features.view(z.shape[0], self.channel_size, self.image_size, self.image_size)
+        return output
+
+
+class ABPSC():
+    def __init__(self, latent_size, alpha, learning_rate, langevin_steps, noise_variance, slab_variance, langevin_stepsize, device):
+        super().__init__()
+
+        self.device = device
         self.noise_variance = noise_variance
         self.slab_variance = slab_variance
         self.langevin_steps = langevin_steps
@@ -53,7 +73,6 @@ class ABPSC():
         self.alpha = alpha
         self.learning_rate = learning_rate
         self.langevin_stepsize = langevin_stepsize
-
 
     def init_weight(self):
         classname = self.generator.__class__.__name__
@@ -68,58 +87,68 @@ class ABPSC():
         return loss
 
     def latent_gradient(self, z):
-        exp1 = torch.exp(-torch.pow(z, 2) / 2)
-        exp2 = torch.exp(-torch.pow(z, 2) / 2 / (self.slab_variance ** 2))
-        gradient = -(self.alpha * z * exp1 + (1 - self.alpha) * z / (self.slab_variance ** 3) * exp2) / (self.alpha * exp1 + (1 - self.alpha) / self.slab_variance * exp2)
+        #exp1 = torch.exp(-torch.pow(z, 2) / 2)
+        #exp2 = torch.exp(-torch.pow(z, 2) / 2 / (self.slab_variance ** 2))
+        #gradient = -(self.alpha * z * exp1 + (1 - self.alpha) * z / (self.slab_variance ** 3) * exp2) / (self.alpha * exp1 + (1 - self.alpha) / self.slab_variance * exp2)
+        ratio1 = (1 - self.alpha) / (self.alpha * self.slab_variance)
+        ratio2 = (self.slab_variance * self.slab_variance - 1) / (self.slab_variance * self.slab_variance)
+        gradient = - z + ratio1 * ratio2 * z / (torch.exp(-ratio2 * torch.pow(z, 2) / 2) + ratio1)
         return gradient
 
-    def langevin_sampling(self, data, z):
+    def langevin_sampling(self, data, z_batch):
         for i in range(self.langevin_steps):
-            if z.grad is not None:
-                z.grad.zero_()
+            if z_batch.grad is not None:
+                z_batch.grad.zero_()
 
-            generated = self.generator(z)
+            generated = self.generator(z_batch)
             loss = self.loss_function(data, generated)
             loss.backward()
+            # Update Z
+            u = torch.randn(z_batch.shape[0], z_batch.shape[1]).to(self.device)
+            z_batch = z_batch - (self.langevin_stepsize ** 2) / 2 * (z_batch.grad - self.latent_gradient(z_batch)) + self.langevin_stepsize * u
+            z_batch = z_batch.detach().requires_grad_()
+        return z_batch
 
-            u = torch.randn(z.shape[0], z.shape[1]).to(self.device)
-            z = z - (self.langevin_stepsize ** 2) / 2 * (z.grad - self.latent_gradient(z)) + self.langevin_stepsize * u
-            z = z.detach().requires_grad_()
-        return z
-
-    def train(self, train_loader, num_epochs, hidden_size, kernel_size,  channel_size, image_size):
-        self.generator = Generator(self.latent_size, hidden_size, kernel_size, channel_size, image_size).to(self.device)
-        self.init_weight()
+    def train(self, train_loader, num_epochs, hidden_size, kernel_size,  channel_size, image_size, linear=False):
+        if linear:
+            self.generator = Linear_Generator(self.latent_size, hidden_size, channel_size, image_size).to(self.device)
+        else:
+            self.generator = Generator(self.latent_size, hidden_size, kernel_size, channel_size, image_size).to(self.device)
+            self.init_weight()
         optimizer = torch.optim.Adam(self.generator.parameters(), lr=self.learning_rate)
 
         self.batch_size = train_loader.batch_size
 
-        z = self.alpha * torch.randn(len(train_loader.dataset), self.latent_size) + (1 - self.alpha) * torch.mul(torch.randn(len(train_loader.dataset), self.latent_size), self.slab_variance)
-        z = z.to(self.device).requires_grad_()
+        self.z = self.alpha * torch.randn(len(train_loader.dataset), self.latent_size) + (1 - self.alpha) * torch.mul(torch.randn(len(train_loader.dataset), self.latent_size), self.slab_variance)
+        self.z = self.z.to(self.device).requires_grad_()
 
         for epochs in range(num_epochs):
             total_loss = 0
 
             for batch_idx, (data, _) in enumerate(train_loader):
                 data = data.to(self.device)
-                z_batch = z[self.batch_size * batch_idx:self.batch_size * batch_idx + data.shape[0]].detach().requires_grad_()
+                z_batch = self.z[self.batch_size * batch_idx:self.batch_size * batch_idx + data.shape[0]].detach().requires_grad_()
                 # Inferential Step
                 z_batch = self.langevin_sampling(data, z_batch)
-                z[self.batch_size * batch_idx:self.batch_size * batch_idx + data.shape[0]] = z_batch
-                # Learning Step
+                self.z[self.batch_size * batch_idx:self.batch_size * batch_idx + data.shape[0]] = z_batch
+                # Learning Step, update Generator
                 optimizer.zero_grad()
                 generated = self.generator(z_batch)
                 loss = self.loss_function(data, generated)
                 loss.backward()
                 optimizer.step()
-                total_loss = total_loss + loss.item()
+                # Sum up loss
+                total_loss += float(loss)
 
             if epochs % 5 == 0 or epochs == num_epochs - 1:
                 print("Interation:", epochs)
                 print("Loss: ", total_loss)
-                print("Average Z Sum:", torch.pow(z, 2).sum() / len(train_loader.dataset))
+                print("Average Z Sum:", torch.pow(self.z, 2).sum() / len(train_loader.dataset))
                 ###
             else:
                 print("Iteration:", epochs)
                 print("Loss", total_loss)
-                print("Average Z Sum:", torch.pow(z, 2).sum() / len(train_loader.dataset))
+                print("Average Z Sum:", torch.pow(self.z, 2).sum() / len(train_loader.dataset))
+
+    def get_latent(self):
+        return self.z
